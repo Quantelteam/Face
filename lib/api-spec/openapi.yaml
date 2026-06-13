@@ -1,22 +1,26 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: FacePay Transit API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication and face enrollment
+  - name: users
+    description: User management
+  - name: bus
+    description: Bus payment terminal
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +28,414 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/register:
+    post:
+      operationId: registerUser
+      tags: [auth]
+      summary: Register a new user with pre-enrolled face embeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserRegistration"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Bad request
+
+  /auth/enroll-face:
+    post:
+      operationId: enrollFace
+      tags: [auth]
+      summary: Submit base64 face images for enrollment (front, left, right)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FaceEnrollInput"
+      responses:
+        "200":
+          description: Face enrolled, returns embedding token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FaceEnrollResult"
+
+  /auth/identify:
+    post:
+      operationId: identifyFace
+      tags: [auth]
+      summary: Identify a person by face image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FaceIdentifyInput"
+      responses:
+        "200":
+          description: Identification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FaceIdentifyResult"
+
+  /users/{userId}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get user profile
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "404":
+          description: Not found
+
+  /users/{userId}/card:
+    get:
+      operationId: getCard
+      tags: [users]
+      summary: Get linked card
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Card details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+        "404":
+          description: No card linked
+    post:
+      operationId: linkCard
+      tags: [users]
+      summary: Link a payment card
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardInput"
+      responses:
+        "201":
+          description: Card linked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+
+  /users/{userId}/card/topup:
+    post:
+      operationId: topUpCard
+      tags: [users]
+      summary: Add funds to card
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopUpInput"
+      responses:
+        "200":
+          description: Updated card balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+
+  /users/{userId}/transactions:
+    get:
+      operationId: listUserTransactions
+      tags: [users]
+      summary: Get transaction history
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transaction"
+
+  /users/{userId}/stats:
+    get:
+      operationId: getUserStats
+      tags: [users]
+      summary: Get usage stats for user dashboard
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserStats"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List all registered users (admin view)
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+
+  /bus/pay:
+    post:
+      operationId: busPayment
+      tags: [bus]
+      summary: Process bus fare payment by face identification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BusPayInput"
+      responses:
+        "200":
+          description: Payment result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusPayResult"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    UserRegistration:
+      type: object
+      required: [name, embedding_token]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        embedding_token:
+          type: string
+          description: Token returned by /auth/enroll-face
+
+    FaceEnrollInput:
+      type: object
+      required: [images]
+      properties:
+        images:
+          type: array
+          items:
+            type: string
+          description: Array of base64 encoded JPEG images (front, left-turn, right-turn)
+
+    FaceEnrollResult:
+      type: object
+      required: [embedding_token, face_detected]
+      properties:
+        embedding_token:
+          type: string
+        face_detected:
+          type: boolean
+        message:
+          type: string
+
+    FaceIdentifyInput:
+      type: object
+      required: [image]
+      properties:
+        image:
+          type: string
+          description: Base64 encoded JPEG image
+
+    FaceIdentifyResult:
+      type: object
+      required: [identified, confidence]
+      properties:
+        identified:
+          type: boolean
+        user_id:
+          type: ["integer", "null"]
+        name:
+          type: ["string", "null"]
+        confidence:
+          type: number
+
+    User:
+      type: object
+      required: [id, name, face_enrolled, created_at]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        face_enrolled:
+          type: boolean
+        created_at:
+          type: string
+
+    UserProfile:
+      type: object
+      required: [id, name, face_enrolled, created_at]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        face_enrolled:
+          type: boolean
+        created_at:
+          type: string
+        card:
+          $ref: "#/components/schemas/Card"
+
+    Card:
+      type: object
+      required: [id, user_id, last_four, card_holder, balance, linked_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        last_four:
+          type: string
+        card_holder:
+          type: string
+        balance:
+          type: number
+        linked_at:
+          type: string
+
+    CardInput:
+      type: object
+      required: [card_number, card_holder, expiry]
+      properties:
+        card_number:
+          type: string
+          minLength: 16
+          maxLength: 19
+        card_holder:
+          type: string
+        expiry:
+          type: string
+
+    TopUpInput:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: number
+          minimum: 1
+
+    Transaction:
+      type: object
+      required: [id, user_id, amount, transaction_type, description, created_at]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+        amount:
+          type: number
+        transaction_type:
+          type: string
+          enum: [ride, topup, refund]
+        description:
+          type: string
+        created_at:
+          type: string
+
+    UserStats:
+      type: object
+      required: [total_rides, total_spent, current_balance, rides_this_month, avg_fare]
+      properties:
+        total_rides:
+          type: integer
+        total_spent:
+          type: number
+        current_balance:
+          type: number
+        rides_this_month:
+          type: integer
+        avg_fare:
+          type: number
+
+    BusPayInput:
+      type: object
+      required: [image]
+      properties:
+        image:
+          type: string
+          description: Base64 encoded JPEG image from camera
+
+    BusPayResult:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        user_id:
+          type: ["integer", "null"]
+        user_name:
+          type: ["string", "null"]
+        amount_charged:
+          type: ["number", "null"]
+        remaining_balance:
+          type: ["number", "null"]
+        confidence:
+          type: ["number", "null"]

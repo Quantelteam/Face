@@ -1,0 +1,495 @@
+#!/usr/bin/env python3
+"""
+Production-Grade Hybrid Face Recognition System with Liveness Detection.
+- DeepFace for identity embedding (no face_recognition/dlib)
+- MediaPipe for fast detection & micro-motion analysis (anti-spoofing)
+- Automatic fallback detectors if MediaPipe unavailable
+- Pickle database for user storage
+
+Usage:
+    python deepface_system.py --enroll "Zhantore"
+    python deepface_system.py --run
+    python deepface_system.py --test
+"""
+
+import cv2
+import numpy as np
+import pickle
+import os
+import time
+import argparse
+import sys
+import logging
+import unittest
+from typing import Tuple, List, Dict, Optional
+
+from deepface import DeepFace
+
+# ==========================================
+# SYSTEM CONFIGURATION
+# ==========================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
+logger = logging.getLogger("DeepFaceBiometricSystem")
+
+DB_FILE = "deepface_users.pkl"
+DEFAULT_MODEL = "Facenet"          # 128‑D embeddings
+DEFAULT_TOLERANCE = 0.35           # cosine distance threshold
+
+# ==========================================
+# FACE DETECTOR WITH FALLBACKS
+# ==========================================
+class FaceDetector:
+    """Unified face detector: MediaPipe → OpenCV DNN → DeepFace detector."""
+
+    def __init__(self):
+        self.detector = None
+        self.detector_type = None
+        self._init_detector()
+
+    def _init_detector(self):
+        # Attempt 1: MediaPipe (fastest)
+        try:
+            import mediapipe as mp
+            if hasattr(mp, 'solutions'):
+                self.detector = mp.solutions.face_detection.FaceDetection(
+                    min_detection_confidence=0.6, model_selection=0
+                )
+                self.detector_type = "mediapipe"
+                logger.info("Face detector: MediaPipe (fastest)")
+                return
+            elif hasattr(mp, 'python') and hasattr(mp.python, 'solutions'):
+                self.detector = mp.python.solutions.face_detection.FaceDetection(
+                    min_detection_confidence=0.6, model_selection=0
+                )
+                self.detector_type = "mediapipe"
+                logger.info("Face detector: MediaPipe (alt import)")
+                return
+        except Exception:
+            pass
+
+        # Attempt 2: OpenCV DNN (downloads model once)
+        try:
+            model_path = self._download_opencv_model()
+            if model_path:
+                net = cv2.dnn.readNetFromCaffe(
+                    os.path.join(model_path, "deploy.prototxt"),
+                    os.path.join(model_path, "res10_300x300_ssd_iter_140000.caffemodel")
+                )
+                self.detector = net
+                self.detector_type = "opencv_dnn"
+                logger.info("Face detector: OpenCV DNN (fast)")
+                return
+        except Exception:
+            pass
+
+        # Attempt 3: DeepFace's built-in detector
+        self.detector_type = "deepface"
+        logger.info("Face detector: DeepFace fallback (slower but reliable)")
+
+    @staticmethod
+    def _download_opencv_model() -> Optional[str]:
+        model_dir = os.path.join(os.path.expanduser("~"), ".cvmodel")
+        os.makedirs(model_dir, exist_ok=True)
+        deploy = os.path.join(model_dir, "deploy.prototxt")
+        model = os.path.join(model_dir, "res10_300x300_ssd_iter_140000.caffemodel")
+
+        if os.path.exists(deploy) and os.path.exists(model):
+            return model_dir
+
+        import urllib.request
+        logger.info("Downloading OpenCV face model (first time only)...")
+        urls = {
+            deploy: "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
+            model: "https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel"
+        }
+        try:
+            for path, url in urls.items():
+                if not os.path.exists(path):
+                    urllib.request.urlretrieve(url, path)
+            return model_dir
+        except Exception as e:
+            logger.warning(f"Could not download model: {e}")
+            return None
+
+    def detect(self, img_rgb: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        h, w = img_rgb.shape[:2]
+        faces = []
+
+        if self.detector_type == "mediapipe":
+            results = self.detector.process(img_rgb)
+            if results.detections:
+                for det in results.detections:
+                    bbox = det.location_data.relative_bounding_box
+                    x = int(bbox.xmin * w)
+                    y = int(bbox.ymin * h)
+                    width = int(bbox.width * w)
+                    height = int(bbox.height * h)
+                    if width > 0 and height > 0:
+                        faces.append((x, y, width, height))
+
+        elif self.detector_type == "opencv_dnn":
+            blob = cv2.dnn.blobFromImage(img_rgb, 1.0, (300, 300), (104.0, 177.0, 123.0))
+            self.detector.setInput(blob)
+            detections = self.detector.forward()
+            for i in range(detections.shape[2]):
+                confidence = detections[0, 0, i, 2]
+                if confidence > 0.5:
+                    box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                    (x1, y1, x2, y2) = box.astype("int")
+                    x, y = max(0, x1), max(0, y1)
+                    width = min(w - x, x2 - x1)
+                    height = min(h - y, y2 - y1)
+                    if width > 0 and height > 0:
+                        faces.append((x, y, width, height))
+
+        else:  # deepface fallback
+            try:
+                extracted = DeepFace.extract_faces(img_path=img_rgb, detector_backend='opencv',
+                                                   enforce_detection=False)
+                for face_info in extracted:
+                    area = face_info.get("area", {})
+                    x = area.get("x", 0)
+                    y = area.get("y", 0)
+                    width = area.get("w", 0)
+                    height = area.get("h", 0)
+                    if width > 0 and height > 0:
+                        faces.append((x, y, width, height))
+            except Exception as e:
+                logger.debug(f"DeepFace detection failed: {e}")
+
+        return faces
+
+
+# ==========================================
+# LIVENESS DETECTION (micro-motion, no blink)
+# ==========================================
+class LivenessDetector:
+    """
+    Detects if a face is live by analyzing natural micro-movements.
+    A static photo will have near-zero landmark variance.
+    """
+    def __init__(self, history_frames: int = 15, motion_threshold: float = 0.002):
+        self.history_frames = history_frames
+        self.motion_threshold = motion_threshold
+        self.landmark_history = []
+        self.face_mesh = None
+        self.use_mesh = False
+
+        try:
+            import mediapipe as mp
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                static_image_mode=False,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            self.use_mesh = True
+            logger.info("Liveness: MediaPipe Face Mesh active (micro-motion detection)")
+        except Exception as e:
+            logger.warning(f"Liveness: MediaPipe not available – liveness disabled. {e}")
+
+    def is_live(self, frame_rgb: np.ndarray) -> Tuple[bool, float]:
+        if not self.use_mesh:
+            return True, 1.0   # fallback – assume live
+
+        results = self.face_mesh.process(frame_rgb)
+        if not results.multi_face_landmarks:
+            return False, 0.0
+
+        landmarks = results.multi_face_landmarks[0].landmark
+        # Nose tip (index 1), left eye corner (33), right eye corner (263)
+        nose = (landmarks[1].x, landmarks[1].y)
+        left_eye = (landmarks[33].x, landmarks[33].y)
+        right_eye = (landmarks[263].x, landmarks[263].y)
+
+        motion_vec = [nose[0], nose[1], left_eye[0], left_eye[1], right_eye[0], right_eye[1]]
+        self.landmark_history.append(motion_vec)
+        if len(self.landmark_history) > self.history_frames:
+            self.landmark_history.pop(0)
+
+        if len(self.landmark_history) < self.history_frames:
+            return True, 0.5   # not enough data yet
+
+        history_arr = np.array(self.landmark_history)  # (frames, 6)
+        std_devs = np.std(history_arr, axis=0)
+        avg_std = np.mean(std_devs)
+
+        if avg_std > self.motion_threshold:
+            confidence = min(1.0, avg_std / 0.01)
+            return True, confidence
+        else:
+            confidence = max(0.0, 1.0 - (self.motion_threshold / (avg_std + 1e-6)))
+            return False, confidence
+
+
+# ==========================================
+# DATABASE MANAGER
+# ==========================================
+class FaceDatabase:
+    def __init__(self, db_path: str = DB_FILE):
+        self.db_path = db_path
+        self.users: Dict[str, np.ndarray] = self._load_db()
+
+    def _load_db(self) -> Dict[str, np.ndarray]:
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, 'rb') as f:
+                    data = pickle.load(f)
+                    logger.info(f"Database loaded: {len(data)} profile(s)")
+                    return data
+            except Exception as e:
+                logger.error(f"Database corrupted: {e}. Starting fresh.")
+        return {}
+
+    def save_user(self, name: str, encoding: np.ndarray) -> None:
+        self.users[name] = encoding
+        with open(self.db_path, 'wb') as f:
+            pickle.dump(self.users, f)
+        logger.info(f"User '{name}' enrolled (embedding dim={encoding.shape[0]})")
+
+    def identify(self, unknown_enc: np.ndarray, tolerance: float = DEFAULT_TOLERANCE) -> Tuple[str, float]:
+        if not self.users:
+            return "Unknown", 0.0
+
+        best_name = "Unknown"
+        best_score = 0.0
+        best_dist = float('inf')
+
+        for name, known_enc in self.users.items():
+            sim = 1.0 - self._cosine_distance(unknown_enc, known_enc)
+            dist = 1.0 - sim
+            if dist < best_dist:
+                best_dist = dist
+                best_score = sim * 100.0
+                if dist <= tolerance:
+                    best_name = name
+        return best_name, best_score
+
+    @staticmethod
+    def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+        norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
+        if norm_a == 0 or norm_b == 0:
+            return 1.0
+        return 1.0 - np.dot(a, b) / (norm_a * norm_b)
+
+
+# ==========================================
+# BIOMETRIC ENGINE (DeepFace only)
+# ==========================================
+class BiometricEngine:
+    def __init__(self, model_name: str = DEFAULT_MODEL):
+        self.model_name = model_name
+        self.detector = FaceDetector()
+        self.liveness = LivenessDetector()
+        self.db = FaceDatabase()
+        # Pre‑load DeepFace model
+        logger.info(f"Loading DeepFace model '{model_name}'...")
+        try:
+            _ = DeepFace.represent(img_path=np.zeros((224, 224, 3), dtype=np.uint8),
+                                   model_name=model_name, enforce_detection=False,
+                                   detector_backend='skip')
+            logger.info("DeepFace model ready.")
+        except Exception as e:
+            logger.error(f"Failed to load DeepFace model: {e}")
+            sys.exit(1)
+        # Simple cache for performance
+        self.last_crop = None
+        self.last_embedding = None
+
+    def _get_embedding(self, face_rgb: np.ndarray) -> Optional[np.ndarray]:
+        if face_rgb is None or face_rgb.size == 0:
+            return None
+        h, w = face_rgb.shape[:2]
+        if max(h, w) > 300:
+            scale = 300.0 / max(h, w)
+            new_w, new_h = int(w * scale), int(h * scale)
+            face_rgb = cv2.resize(face_rgb, (new_w, new_h))
+        try:
+            result = DeepFace.represent(img_path=face_rgb, model_name=self.model_name,
+                                        detector_backend='skip', enforce_detection=False)
+            if result and isinstance(result, list) and len(result) > 0:
+                return np.array(result[0]['embedding'])
+        except Exception as e:
+            logger.debug(f"Embedding extraction failed: {e}")
+        return None
+
+    def process_frame(self, frame: np.ndarray) -> np.ndarray:
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        faces = self.detector.detect(rgb)
+
+        for (x, y, w, h) in faces:
+            # ---- Liveness check (micro-motion) ----
+            is_live, liveness_conf = self.liveness.is_live(rgb)
+            if not is_live:
+                self._draw_overlay(frame, x, y, w, h, "SPOOF", 0.0)
+                continue   # do not recognise static faces
+
+            # ---- Identity extraction ----
+            crop = rgb[y:y+h, x:x+w]
+            reuse = False
+            if self.last_crop is not None and self.last_embedding is not None:
+                if crop.shape == self.last_crop.shape:
+                    diff = cv2.absdiff(crop, self.last_crop).mean()
+                    if diff < 5.0:
+                        embedding = self.last_embedding
+                        reuse = True
+            if not reuse:
+                embedding = self._get_embedding(crop)
+                if embedding is not None:
+                    self.last_crop = crop.copy()
+                    self.last_embedding = embedding
+            else:
+                embedding = self.last_embedding
+
+            name, confidence = "Unknown", 0.0
+            if embedding is not None:
+                name, confidence = self.db.identify(embedding)
+
+            self._draw_overlay(frame, x, y, w, h, name, confidence)
+
+        return frame
+
+    def enroll_user_from_camera(self, name: str) -> None:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            logger.error("Cannot open camera")
+            return
+
+        logger.info(f"Enrolling '{name}'. Press 'c' to capture face, 'q' to cancel.")
+        samples = []
+        required = 3
+
+        while cap.isOpened() and len(samples) < required:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            faces = self.detector.detect(rgb)
+
+            # Instructions on frame
+            cv2.putText(frame, f"Enroll: {name}", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,0), 2)
+            cv2.putText(frame, f"Samples: {len(samples)}/{required}", (20, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+            cv2.putText(frame, "Press 'c' to capture, 'q' to quit", (20, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
+
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
+
+            cv2.imshow("Enrollment", frame)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('c') and faces:
+                x, y, w, h = faces[0]
+                crop = rgb[y:y+h, x:x+w]
+                emb = self._get_embedding(crop)
+                if emb is not None:
+                    samples.append(emb)
+                    logger.info(f"Sample {len(samples)} captured")
+                    time.sleep(0.5)  # debounce
+            elif key == ord('q'):
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+        if len(samples) == required:
+            master = np.mean(samples, axis=0)
+            master = master / np.linalg.norm(master)
+            self.db.save_user(name, master)
+            logger.info(f"✅ Enrollment complete for '{name}'")
+        else:
+            logger.warning("Enrollment cancelled / incomplete")
+
+    @staticmethod
+    def _draw_overlay(img, x, y, w, h, name, conf):
+        if name == "SPOOF":
+            color = (0, 0, 255)  # red
+            label = "SPOOF DETECTED"
+            cv2.rectangle(img, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(img, label, (x+5, y-8), cv2.FONT_HERSHEY_DUPLEX, 0.6, color, 2)
+            return
+
+        known = name != "Unknown"
+        color = (0, 255, 0) if known else (0, 0, 255)
+        cv2.rectangle(img, (x, y), (x+w, y+h), color, 2)
+        label = f"{name} ({conf:.1f}%)" if known else "UNKNOWN"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.6, 1)
+        cv2.rectangle(img, (x, y-30), (x+tw+10, y), color, cv2.FILLED)
+        txt_color = (0, 0, 0) if known else (255, 255, 255)
+        cv2.putText(img, label, (x+5, y-8), cv2.FONT_HERSHEY_DUPLEX, 0.6, txt_color, 1)
+
+
+# ==========================================
+# UNIT TESTS
+# ==========================================
+class TestSystem(unittest.TestCase):
+    def setUp(self):
+        self.db = FaceDatabase(db_path="test_db.pkl")
+
+    def test_identify(self):
+        fake = np.random.rand(128)
+        fake = fake / np.linalg.norm(fake)
+        self.db.save_user("TestUser", fake)
+        name, conf = self.db.identify(fake)
+        self.assertEqual(name, "TestUser")
+        self.assertGreater(conf, 99.0)
+
+    def tearDown(self):
+        if os.path.exists("test_db.pkl"):
+            os.remove("test_db.pkl")
+
+
+# ==========================================
+# MAIN ENTRY POINT
+# ==========================================
+def main():
+    parser = argparse.ArgumentParser(description="DeepFace Biometric System with Liveness")
+    parser.add_argument("--enroll", type=str, help="Name to enroll")
+    parser.add_argument("--run", action="store_true", help="Live recognition")
+    parser.add_argument("--test", action="store_true", help="Run unit tests")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="DeepFace model name")
+
+    args = parser.parse_args()
+
+    if args.test:
+        sys.argv = [sys.argv[0]]
+        unittest.main(verbosity=2)
+        return
+
+    engine = BiometricEngine(model_name=args.model)
+
+    if args.enroll:
+        engine.enroll_user_from_camera(args.enroll)
+    elif args.run:
+        logger.info("Live mode. Press 'q' to quit.")
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            logger.error("No camera access")
+            return
+        prev_time = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = engine.process_frame(frame)
+            now = time.time()
+            fps = 1 / (now - prev_time) if (now - prev_time) > 0 else 0
+            prev_time = now
+            cv2.putText(frame, f"FPS: {int(fps)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            cv2.imshow("DeepFace Biometric System", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        cap.release()
+        cv2.destroyAllWindows()
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
