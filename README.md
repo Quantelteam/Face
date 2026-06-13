@@ -46,7 +46,7 @@ To account for extreme operating conditions—such as winter gear, masks, or ina
 | **API Client** | Orval | Auto-generated React Query hooks from OpenAPI spec |
 | **Routing** | Wouter | Lightweight client-side router |
 | **Backend Engine** | Python 3.12 + FastAPI | Async REST API orchestration |
-| **ORM & DB Connection** | SQLAlchemy + psycopg2-binary | Structured queries and connection pooling |
+| **ORM & DB Connection** | Supabase | Structured queries and connection pooling |
 | **Biometric Processing**| OpenCV Haar Cascade | Frontal face crop and local feature extraction |
 | **Embedding Engine** | 4x4 Grid LBP Histograms | 1024-dimensional visual descriptor; cosine similarity matching |
 
