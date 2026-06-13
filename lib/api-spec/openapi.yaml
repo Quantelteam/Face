@@ -271,6 +271,10 @@ components:
         embedding_token:
           type: string
           description: Token returned by /auth/enroll-face
+        exemption_type:
+          type: ["string", "null"]
+          enum: ["child", "elderly", "disabled", "veteran", null]
+          description: "Free ride exemption category"
 
     FaceEnrollInput:
       type: object
@@ -326,6 +330,8 @@ components:
           type: boolean
         created_at:
           type: string
+        exemption_type:
+          type: ["string", "null"]
 
     UserProfile:
       type: object
@@ -339,6 +345,8 @@ components:
           type: boolean
         created_at:
           type: string
+        exemption_type:
+          type: ["string", "null"]
         card:
           $ref: "#/components/schemas/Card"
 
@@ -429,9 +437,17 @@ components:
           type: boolean
         message:
           type: string
+        is_unknown:
+          type: boolean
+          description: "True when face could not be matched to any registered user"
+        is_free_ride:
+          type: boolean
+          description: "True when user qualifies for a free ride (exempt category)"
         user_id:
           type: ["integer", "null"]
         user_name:
+          type: ["string", "null"]
+        exemption_type:
           type: ["string", "null"]
         amount_charged:
           type: ["number", "null"]

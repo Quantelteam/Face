@@ -24,7 +24,8 @@ export const HealthCheckResponse = zod.object({
 
 export const RegisterUserBody = zod.object({
   "name": zod.string().min(1),
-  "embedding_token": zod.string().describe('Token returned by \/auth\/enroll-face')
+  "embedding_token": zod.string().describe('Token returned by \/auth\/enroll-face'),
+  "exemption_type": zod.union([zod.literal('child'),zod.literal('elderly'),zod.literal('disabled'),zod.literal('veteran'),zod.literal(null)]).nullish().describe('Free ride exemption category')
 })
 
 
@@ -69,6 +70,7 @@ export const GetUserResponse = zod.object({
   "name": zod.string(),
   "face_enrolled": zod.boolean(),
   "created_at": zod.string(),
+  "exemption_type": zod.string().nullish(),
   "card": zod.object({
   "id": zod.number(),
   "user_id": zod.number(),
@@ -181,7 +183,8 @@ export const ListUsersResponseItem = zod.object({
   "id": zod.number(),
   "name": zod.string(),
   "face_enrolled": zod.boolean(),
-  "created_at": zod.string()
+  "created_at": zod.string(),
+  "exemption_type": zod.string().nullish()
 })
 export const ListUsersResponse = zod.array(ListUsersResponseItem)
 
@@ -196,8 +199,11 @@ export const BusPaymentBody = zod.object({
 export const BusPaymentResponse = zod.object({
   "success": zod.boolean(),
   "message": zod.string(),
+  "is_unknown": zod.boolean().optional().describe('True when face could not be matched to any registered user'),
+  "is_free_ride": zod.boolean().optional().describe('True when user qualifies for a free ride (exempt category)'),
   "user_id": zod.number().nullish(),
   "user_name": zod.string().nullish(),
+  "exemption_type": zod.string().nullish(),
   "amount_charged": zod.number().nullish(),
   "remaining_balance": zod.number().nullish(),
   "confidence": zod.number().nullish()

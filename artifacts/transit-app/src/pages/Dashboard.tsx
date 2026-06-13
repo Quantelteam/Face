@@ -1,27 +1,34 @@
+import { useState } from "react";
 import { useRoute, useLocation } from "wouter";
-import { 
-  useGetUser, 
+import {
+  useGetUser,
   getGetUserQueryKey,
-  useGetUserStats, 
+  useGetUserStats,
   getGetUserStatsQueryKey,
   useListUserTransactions,
   getListUserTransactionsQueryKey,
   useGetCard,
   getGetCardQueryKey,
-  useTopUpCard
+  useTopUpCard,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { PageTransition } from "@/components/PageTransition";
 import { clearUserId } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CreditCard, History, Plus, LogOut, ArrowUpRight, ArrowDownRight, RefreshCcw } from "lucide-react";
-import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { CreditCard, History, Plus, LogOut, ArrowUpRight, ArrowDownRight, RefreshCcw, ShieldCheck } from "lucide-react";
 import { format } from "date-fns";
+
+const EXEMPTION_LABELS: Record<string, string> = {
+  child: "Child (under 16) — Free Rides",
+  elderly: "Elderly — Free Rides",
+  disabled: "Disabled — Free Rides",
+  veteran: "Veteran — Free Rides",
+};
 
 export default function Dashboard() {
   const [, params] = useRoute("/dashboard/:id");
@@ -32,21 +39,21 @@ export default function Dashboard() {
 
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [amountStr, setAmountStr] = useState("10");
-  
+
   const topUpMutation = useTopUpCard();
 
   const { data: user, isLoading: loadingUser } = useGetUser(userId, {
     query: { enabled: !!userId, queryKey: getGetUserQueryKey(userId) }
   });
-  
+
   const { data: stats, isLoading: loadingStats } = useGetUserStats(userId, {
     query: { enabled: !!userId, queryKey: getGetUserStatsQueryKey(userId) }
   });
-  
+
   const { data: card, isLoading: loadingCard } = useGetCard(userId, {
     query: { enabled: !!userId, queryKey: getGetCardQueryKey(userId) }
   });
-  
+
   const { data: txs, isLoading: loadingTx } = useListUserTransactions(userId, {
     query: { enabled: !!userId, queryKey: getListUserTransactionsQueryKey(userId) }
   });
@@ -62,33 +69,29 @@ export default function Dashboard() {
       toast({ title: "Invalid amount", variant: "destructive" });
       return;
     }
-
     try {
-      await topUpMutation.mutateAsync({
-        userId,
-        data: { amount }
-      });
-      
+      await topUpMutation.mutateAsync({ userId, data: { amount } });
       toast({ title: "Top-up successful", description: `Added $${amount.toFixed(2)} to your balance.` });
       setTopUpOpen(false);
-      
-      // Invalidate queries
       queryClient.invalidateQueries({ queryKey: getGetCardQueryKey(userId) });
       queryClient.invalidateQueries({ queryKey: getGetUserStatsQueryKey(userId) });
       queryClient.invalidateQueries({ queryKey: getListUserTransactionsQueryKey(userId) });
-    } catch (err) {
+    } catch {
       toast({ title: "Top-up failed", variant: "destructive" });
     }
   };
 
-  const formatCurrency = (val: number) => `$${val.toFixed(2)}`;
+  const fmt = (val: number) => `$${val.toFixed(2)}`;
 
   if (loadingUser) {
     return (
       <div className="min-h-screen bg-slate-50 p-6 flex flex-col max-w-lg mx-auto gap-6">
         <Skeleton className="h-12 w-3/4 rounded-lg" />
         <Skeleton className="h-48 w-full rounded-2xl" />
-        <div className="grid grid-cols-2 gap-4"><Skeleton className="h-24 rounded-xl" /><Skeleton className="h-24 rounded-xl" /></div>
+        <div className="grid grid-cols-2 gap-4">
+          <Skeleton className="h-24 rounded-xl" />
+          <Skeleton className="h-24 rounded-xl" />
+        </div>
       </div>
     );
   }
@@ -119,8 +122,23 @@ export default function Dashboard() {
         </Button>
       </header>
 
-      <div className="max-w-lg mx-auto px-6 py-8 space-y-8">
-        
+      <div className="max-w-lg mx-auto px-6 py-8 space-y-6">
+
+        {/* Exemption Badge */}
+        {user.exemption_type && (
+          <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-2xl px-5 py-4">
+            <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+              <ShieldCheck className="w-5 h-5 text-blue-600" />
+            </div>
+            <div>
+              <p className="font-semibold text-blue-800 text-sm">Free Ride Exemption Active</p>
+              <p className="text-blue-600 text-xs mt-0.5">
+                {EXEMPTION_LABELS[user.exemption_type] ?? user.exemption_type}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Digital Wallet Card */}
         <section>
           {loadingCard ? (
@@ -132,25 +150,30 @@ export default function Dashboard() {
               </div>
               <div className="relative z-10">
                 <p className="text-white/80 text-sm font-medium tracking-wider uppercase mb-1">Transit Balance</p>
-                <h2 className="text-5xl font-bold tracking-tight mb-8">
-                  {formatCurrency(card.balance)}
-                </h2>
-                
+                <h2 className="text-5xl font-bold tracking-tight mb-8">{fmt(card.balance)}</h2>
                 <div className="flex justify-between items-end">
                   <div>
                     <p className="text-white/60 text-xs mb-0.5">Linked Card</p>
                     <p className="font-mono text-sm tracking-widest">•••• {card.last_four}</p>
                   </div>
-                  <Button 
-                    size="sm" 
-                    variant="secondary" 
-                    className="rounded-xl shadow-md h-10 px-4 font-semibold text-secondary bg-white hover:bg-white/90"
-                    onClick={() => setTopUpOpen(true)}
-                  >
-                    <Plus className="w-4 h-4 mr-1.5" /> Top Up
-                  </Button>
+                  {!user.exemption_type && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="rounded-xl shadow-md h-10 px-4 font-semibold text-secondary bg-white hover:bg-white/90"
+                      onClick={() => setTopUpOpen(true)}
+                    >
+                      <Plus className="w-4 h-4 mr-1.5" /> Top Up
+                    </Button>
+                  )}
                 </div>
               </div>
+            </div>
+          ) : user.exemption_type ? (
+            <div className="bg-gradient-to-br from-blue-600 to-blue-800 rounded-3xl p-6 text-white shadow-xl text-center">
+              <ShieldCheck className="w-12 h-12 mx-auto mb-3 text-blue-200" />
+              <h3 className="text-xl font-bold mb-1">Free Rides Enabled</h3>
+              <p className="text-blue-200 text-sm">No payment card required — your exemption covers all fares.</p>
             </div>
           ) : (
             <div className="bg-white border-2 border-dashed border-border rounded-3xl p-8 text-center flex flex-col items-center">
@@ -172,11 +195,11 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white p-5 rounded-2xl border border-border shadow-sm">
               <p className="text-xs text-muted-foreground mb-1 font-medium">Total Rides</p>
-              <p className="text-2xl font-bold text-secondary">{loadingStats ? "-" : stats?.rides_this_month || 0}</p>
+              <p className="text-2xl font-bold text-secondary">{loadingStats ? "-" : stats?.rides_this_month ?? 0}</p>
             </div>
             <div className="bg-white p-5 rounded-2xl border border-border shadow-sm">
               <p className="text-xs text-muted-foreground mb-1 font-medium">Total Spent</p>
-              <p className="text-2xl font-bold text-secondary">{loadingStats ? "-" : formatCurrency(stats?.total_spent || 0)}</p>
+              <p className="text-2xl font-bold text-secondary">{loadingStats ? "-" : fmt(stats?.total_spent ?? 0)}</p>
             </div>
           </div>
         </section>
@@ -187,15 +210,15 @@ export default function Dashboard() {
             <h3 className="text-sm font-bold text-secondary uppercase tracking-wider">Recent Activity</h3>
             <History className="w-4 h-4 text-muted-foreground" />
           </div>
-          
+
           <div className="bg-white rounded-2xl border border-border overflow-hidden shadow-sm">
             {loadingTx ? (
               <div className="p-4 space-y-4">
-                {[1,2,3].map(i => <Skeleton key={i} className="h-12 w-full" />)}
+                {[1, 2, 3].map(i => <Skeleton key={i} className="h-12 w-full" />)}
               </div>
             ) : txs && txs.length > 0 ? (
               <div className="divide-y divide-border">
-                {txs.slice(0, 5).map(tx => (
+                {txs.slice(0, 8).map(tx => (
                   <div key={tx.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors">
                     <div className="flex items-center gap-3">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
@@ -203,7 +226,7 @@ export default function Dashboard() {
                         tx.transaction_type === 'refund' ? 'bg-blue-100 text-blue-600' :
                         'bg-red-100 text-red-600'
                       }`}>
-                        {tx.transaction_type === 'topup' ? <ArrowDownRight className="w-5 h-5" /> : 
+                        {tx.transaction_type === 'topup' ? <ArrowDownRight className="w-5 h-5" /> :
                          tx.transaction_type === 'refund' ? <RefreshCcw className="w-4 h-4" /> :
                          <ArrowUpRight className="w-5 h-5" />}
                       </div>
@@ -213,7 +236,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <p className={`font-bold text-sm ${tx.transaction_type === 'topup' || tx.transaction_type === 'refund' ? 'text-green-600' : 'text-secondary'}`}>
-                      {tx.transaction_type === 'topup' || tx.transaction_type === 'refund' ? '+' : '-'}{formatCurrency(tx.amount)}
+                      {tx.transaction_type === 'topup' || tx.transaction_type === 'refund' ? '+' : '-'}{fmt(tx.amount)}
                     </p>
                   </div>
                 ))}
@@ -225,7 +248,6 @@ export default function Dashboard() {
             )}
           </div>
         </section>
-
       </div>
 
       {/* Top Up Dialog */}
@@ -233,18 +255,16 @@ export default function Dashboard() {
         <DialogContent className="sm:max-w-md rounded-3xl">
           <DialogHeader>
             <DialogTitle>Add Funds</DialogTitle>
-            <DialogDescription>
-              Top up your transit balance from your linked card.
-            </DialogDescription>
+            <DialogDescription>Top up your transit balance from your linked card.</DialogDescription>
           </DialogHeader>
-          
+
           <div className="py-6 space-y-4">
             <div className="flex gap-2 justify-center mb-6">
               {['10', '20', '50'].map(val => (
-                <Button 
-                  key={val} 
-                  type="button" 
-                  variant={amountStr === val ? "default" : "outline"} 
+                <Button
+                  key={val}
+                  type="button"
+                  variant={amountStr === val ? "default" : "outline"}
                   onClick={() => setAmountStr(val)}
                   className="rounded-xl flex-1"
                 >
@@ -252,17 +272,17 @@ export default function Dashboard() {
                 </Button>
               ))}
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="amount">Custom Amount</Label>
               <div className="relative">
                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-medium">$</span>
-                <Input 
-                  id="amount" 
-                  type="number" 
-                  value={amountStr} 
+                <Input
+                  id="amount"
+                  type="number"
+                  value={amountStr}
                   onChange={e => setAmountStr(e.target.value)}
-                  className="pl-8 h-12 text-lg rounded-xl" 
+                  className="pl-8 h-12 text-lg rounded-xl"
                 />
               </div>
             </div>

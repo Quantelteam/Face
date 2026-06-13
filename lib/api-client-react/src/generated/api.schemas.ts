@@ -9,11 +9,30 @@ export interface HealthStatus {
   status: string;
 }
 
+/**
+ * Free ride exemption category
+ * @nullable
+ */
+export type UserRegistrationExemptionType = typeof UserRegistrationExemptionType[keyof typeof UserRegistrationExemptionType] | null;
+
+
+export const UserRegistrationExemptionType = {
+  child: 'child',
+  elderly: 'elderly',
+  disabled: 'disabled',
+  veteran: 'veteran',
+} as const;
+
 export interface UserRegistration {
   /** @minLength 1 */
   name: string;
   /** Token returned by /auth/enroll-face */
   embedding_token: string;
+  /**
+     * Free ride exemption category
+     * @nullable
+     */
+  exemption_type?: UserRegistrationExemptionType;
 }
 
 export interface FaceEnrollInput {
@@ -46,6 +65,8 @@ export interface User {
   name: string;
   face_enrolled: boolean;
   created_at: string;
+  /** @nullable */
+  exemption_type?: string | null;
 }
 
 export interface Card {
@@ -62,6 +83,8 @@ export interface UserProfile {
   name: string;
   face_enrolled: boolean;
   created_at: string;
+  /** @nullable */
+  exemption_type?: string | null;
   card?: Card;
 }
 
@@ -114,10 +137,16 @@ export interface BusPayInput {
 export interface BusPayResult {
   success: boolean;
   message: string;
+  /** True when face could not be matched to any registered user */
+  is_unknown?: boolean;
+  /** True when user qualifies for a free ride (exempt category) */
+  is_free_ride?: boolean;
   /** @nullable */
   user_id?: number | null;
   /** @nullable */
   user_name?: string | null;
+  /** @nullable */
+  exemption_type?: string | null;
   /** @nullable */
   amount_charged?: number | null;
   /** @nullable */

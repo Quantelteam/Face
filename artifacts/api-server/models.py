@@ -14,6 +14,7 @@ class User(Base):
     name = Column(String(255), nullable=False)
     face_enrolled = Column(Boolean, default=False, nullable=False)
     face_embedding = Column(Text, nullable=True)
+    exemption_type = Column(String(50), nullable=True)  # child, elderly, disabled, veteran
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     card = relationship("Card", back_populates="user", uselist=False, cascade="all, delete-orphan")

@@ -9,10 +9,16 @@
 export interface BusPayResult {
   success: boolean;
   message: string;
+  /** True when face could not be matched to any registered user */
+  is_unknown?: boolean;
+  /** True when user qualifies for a free ride (exempt category) */
+  is_free_ride?: boolean;
   /** @nullable */
   user_id?: number | null;
   /** @nullable */
   user_name?: string | null;
+  /** @nullable */
+  exemption_type?: string | null;
   /** @nullable */
   amount_charged?: number | null;
   /** @nullable */

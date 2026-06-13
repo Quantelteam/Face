@@ -12,6 +12,7 @@ from typing import List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 import face_service
@@ -23,12 +24,32 @@ logger = logging.getLogger("facepay")
 
 BUS_FARE = 1.50
 
+EXEMPTION_LABELS = {
+    "child": "Child (under 16)",
+    "elderly": "Elderly",
+    "disabled": "Disabled",
+    "veteran": "Veteran",
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Creating database tables...")
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables ready.")
+
+    # Run lightweight migrations for columns added after initial table creation
+    try:
+        inspector = inspect(engine)
+        cols = [c["name"] for c in inspector.get_columns("users")]
+        if "exemption_type" not in cols:
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN exemption_type VARCHAR(50)"))
+                conn.commit()
+            logger.info("Migration: added exemption_type column to users.")
+    except Exception as e:
+        logger.warning(f"Migration check failed (may already exist): {e}")
+
     # Pre-warm face detector in background
     import threading
     def _warm():
@@ -69,6 +90,7 @@ class FaceEnrollResponse(BaseModel):
 class UserRegistrationRequest(BaseModel):
     name: str
     embedding_token: str
+    exemption_type: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -76,6 +98,7 @@ class UserResponse(BaseModel):
     name: str
     face_enrolled: bool
     created_at: str
+    exemption_type: Optional[str] = None
 
 
 class FaceIdentifyRequest(BaseModel):
@@ -109,6 +132,7 @@ class UserProfileResponse(BaseModel):
     name: str
     face_enrolled: bool
     created_at: str
+    exemption_type: Optional[str] = None
     card: Optional[CardResponse] = None
 
 
@@ -140,8 +164,11 @@ class BusPayRequest(BaseModel):
 class BusPayResponse(BaseModel):
     success: bool
     message: str
+    is_unknown: bool = False
+    is_free_ride: bool = False
     user_id: Optional[int] = None
     user_name: Optional[str] = None
+    exemption_type: Optional[str] = None
     amount_charged: Optional[float] = None
     remaining_balance: Optional[float] = None
     confidence: Optional[float] = None
@@ -165,6 +192,7 @@ def _user_to_response(user: User) -> UserResponse:
         name=user.name,
         face_enrolled=user.face_enrolled,
         created_at=_fmt_dt(user.created_at),
+        exemption_type=user.exemption_type,
     )
 
 
@@ -216,15 +244,19 @@ def register_user(body: UserRegistrationRequest, db: Session = Depends(get_db)):
     emb = face_service.decode_embedding_token(body.embedding_token)
     if emb is None:
         raise HTTPException(400, "Invalid embedding token.")
+    valid_exemptions = {"child", "elderly", "disabled", "veteran", None}
+    if body.exemption_type not in valid_exemptions:
+        raise HTTPException(400, f"Invalid exemption_type. Must be one of: child, elderly, disabled, veteran.")
     user = User(
         name=body.name.strip(),
         face_enrolled=True,
         face_embedding=body.embedding_token,
+        exemption_type=body.exemption_type,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    logger.info(f"Registered user: {user.name} (id={user.id})")
+    logger.info(f"Registered user: {user.name} (id={user.id}, exempt={user.exemption_type})")
     return _user_to_response(user)
 
 
@@ -266,6 +298,7 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
         name=user.name,
         face_enrolled=user.face_enrolled,
         created_at=_fmt_dt(user.created_at),
+        exemption_type=user.exemption_type,
         card=card_resp,
     )
 
@@ -389,21 +422,44 @@ def bus_payment(body: BusPayRequest, db: Session = Depends(get_db)):
     candidates = [(u.id, u.name, u.face_embedding) for u in users]
 
     if not candidates:
-        return BusPayResponse(success=False, message="No registered users in the system.")
+        return BusPayResponse(
+            success=False,
+            is_unknown=True,
+            message="No registered users in the system.",
+        )
 
     user_id, confidence = face_service.identify_face(body.image, candidates)
 
     if user_id is None:
+        logger.info(f"Bus payment: face not recognized (confidence={confidence:.2f})")
         return BusPayResponse(
             success=False,
-            message="Face not recognized. Please register or try again.",
+            is_unknown=True,
+            message="Face not recognized. Unknown person — please alert the driver.",
             confidence=round(confidence, 2),
         )
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        return BusPayResponse(success=False, message="User not found.")
+        return BusPayResponse(success=False, is_unknown=True, message="User not found.")
 
+    # ── FREE RIDE: exempt category ──────────────────────────────────────────
+    if user.exemption_type:
+        label = EXEMPTION_LABELS.get(user.exemption_type, user.exemption_type.title())
+        logger.info(f"Bus payment: FREE RIDE for {user.name} ({label})")
+        return BusPayResponse(
+            success=True,
+            is_free_ride=True,
+            message=f"Free ride approved! Welcome, {user.name}.",
+            user_id=user_id,
+            user_name=user.name,
+            exemption_type=user.exemption_type,
+            amount_charged=0.0,
+            remaining_balance=round(user.card.balance, 2) if user.card else None,
+            confidence=round(confidence, 2),
+        )
+
+    # ── PAID RIDE ───────────────────────────────────────────────────────────
     if not user.card:
         return BusPayResponse(
             success=False,

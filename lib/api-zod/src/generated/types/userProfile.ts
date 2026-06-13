@@ -12,5 +12,7 @@ export interface UserProfile {
   name: string;
   face_enrolled: boolean;
   created_at: string;
+  /** @nullable */
+  exemption_type?: string | null;
   card?: Card;
 }

@@ -21,4 +21,5 @@ export * from './transactionTransactionType';
 export * from './user';
 export * from './userProfile';
 export * from './userRegistration';
+export * from './userRegistrationExemptionType';
 export * from './userStats';

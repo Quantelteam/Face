@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 export interface CameraViewHandle {
   capture: () => string | null;
+  isReady: () => boolean;
 }
 
 interface CameraViewProps {
@@ -13,10 +14,11 @@ interface CameraViewProps {
   showFaceGuide?: boolean;
   mirror?: boolean;
   aspectRatio?: "video" | "square" | "portrait";
+  onStreamReady?: () => void;
 }
 
 export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
-  ({ isActive, overlayText, overlaySubtext, showFaceGuide = true, mirror = true, aspectRatio = "video" }, ref) => {
+  ({ isActive, overlayText, overlaySubtext, showFaceGuide = true, mirror = true, aspectRatio = "video", onStreamReady }, ref) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -30,20 +32,18 @@ export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
         const ctx = canvas.getContext('2d');
         if (!ctx) return null;
 
-        // Set canvas to actual video dimensions
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+
         if (mirror) {
           ctx.translate(canvas.width, 0);
           ctx.scale(-1, 1);
         }
-        
+
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // Return base64 JPEG
         return canvas.toDataURL('image/jpeg', 0.8);
-      }
+      },
+      isReady: () => !!stream,
     }));
 
     useEffect(() => {
@@ -58,7 +58,7 @@ export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
           activeStream = mediaStream;
           setStream(mediaStream);
           setHasPermission(true);
-          
+
           if (videoRef.current) {
             videoRef.current.srcObject = mediaStream;
           }
@@ -80,6 +80,12 @@ export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
       };
     }, [isActive]);
 
+    useEffect(() => {
+      if (stream && onStreamReady) {
+        onStreamReady();
+      }
+    }, [stream, onStreamReady]);
+
     const aspectClasses = {
       video: "aspect-video",
       square: "aspect-square",
@@ -100,10 +106,8 @@ export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
 
     return (
       <div className={`relative w-full bg-black rounded-2xl overflow-hidden shadow-xl ${aspectClasses[aspectRatio]}`}>
-        {/* Hidden canvas for captures */}
         <canvas ref={canvasRef} className="hidden" />
-        
-        {/* Video feed */}
+
         <video
           ref={videoRef}
           autoPlay
@@ -125,14 +129,13 @@ export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
         {/* Face Guide Overlay */}
         <AnimatePresence>
           {stream && showFaceGuide && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center"
             >
               <div className="w-56 h-72 border-2 border-dashed border-teal-400/70 rounded-[100px] relative">
-                {/* Corner markers */}
                 <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-teal-400 rounded-tl-xl" />
                 <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-teal-400 rounded-tr-xl" />
                 <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-teal-400 rounded-bl-xl" />
@@ -145,7 +148,7 @@ export const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(
         {/* Text Overlay */}
         <AnimatePresence mode="wait">
           {(overlayText || overlaySubtext) && (
-            <motion.div 
+            <motion.div
               key={overlayText}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}

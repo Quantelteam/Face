@@ -5,10 +5,16 @@
  * FacePay Transit API
  * OpenAPI spec version: 0.1.0
  */
+import type { UserRegistrationExemptionType } from './userRegistrationExemptionType';
 
 export interface UserRegistration {
   /** @minLength 1 */
   name: string;
   /** Token returned by /auth/enroll-face */
   embedding_token: string;
+  /**
+     * Free ride exemption category
+     * @nullable
+     */
+  exemption_type?: UserRegistrationExemptionType;
 }
