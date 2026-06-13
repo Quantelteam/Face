@@ -1,92 +1,217 @@
 # FacePay Transit System
 
-An autonomous, zero-action face-recognition payment and boarding verification ecosystem designed for public transit networks. Passengers register their face profile once, link a payment method, and board transit vehicles seamlessly without manual action.
+A monorepo for a transit payment prototype: passengers enroll with face recognition, link a payment card, and board buses via a terminal that identifies them and charges a fare automatically. The backend persists all data in **Supabase** (PostgreSQL).
 
----
+## Features
 
-## System Architecture
+- **Face enrollment & login** — Capture front, left, and right face images; OpenCV-based detection and embedding matching
+- **User profiles** — Registration with optional fare exemptions (child, elderly, disabled, veteran)
+- **Payment cards** — Link a card, top up balance, and view transaction history
+- **Bus terminal** — Camera-based boarding flow with automatic fare deduction or free-ride approval
+- **Admin dashboard** — View registered users and boarding statistics
 
-The FacePay Transit System is comprised of three core layers designed for edge reliability and centralized settlement:
+## Architecture
 
-1. **Vite + React Frontend (`artifacts/transit-app`)**: 
-   - **Passenger Portal**: Allows passengers to scan their face across three angles (straight, left, right) to generate a biometric profile, link cards with secure $50 default balances, check transaction history, and view active exemptions.
-   - **Bus Terminal Kiosk**: Fullscreen camera terminal mounted on transit vehicles. Automatically detects boarding passengers, runs edge face identification, processes fare deduction, and handles status overlays (Approved, Declined, Free Ride, Unknown).
+```
+┌─────────────────────┐     HTTP /api/*     ┌──────────────────────┐
+│  transit-app        │ ──────────────────► │  api-server          │
+│  (React + Vite)     │                     │  (Python FastAPI)    │
+└─────────────────────┘                     └──────────┬───────────┘
+                                                         │
+                                                         │ SQLAlchemy
+                                                         ▼
+                                              ┌──────────────────────┐
+                                              │  Supabase PostgreSQL │
+                                              └──────────────────────┘
+```
 
-2. **FastAPI Python Backend (`artifacts/api-server`)**:
-   - Serves high-performance endpoints for face enrollment, authentication, passenger ledger balance operations, transaction logging, and real-time vehicle entry stats.
+| Layer | Stack |
+| --- | --- |
+| Database | [Supabase](https://supabase.com) (PostgreSQL) |
+| Backend | Python 3.12+, FastAPI, SQLAlchemy, OpenCV |
+| Frontend | React 19, TypeScript, Vite, Tailwind CSS, TanStack Query |
+| API contract | OpenAPI → Orval-generated clients in `lib/` |
+| Deployment | [Render](https://render.com) (`render.yaml`) |
 
-3. **PostgreSQL Relational Storage**:
-   - Keeps state for users, linked payment instruments, ledger entries, and statistical counts for mismatch auditing.
+## Repository layout
 
----
+| Path | Description |
+| --- | --- |
+| `artifacts/api-server` | FastAPI backend — face recognition, users, payments, bus terminal |
+| `artifacts/transit-app` | Passenger and bus-terminal web app |
+| `artifacts/mockup-sandbox` | UI component preview sandbox |
+| `lib/api-spec` | OpenAPI spec and Orval codegen config |
+| `lib/api-client-react` | Generated React Query API client |
+| `lib/api-zod` | Generated Zod schemas and types |
+| `lib/db` | Drizzle ORM utilities (shared TypeScript DB layer) |
+| `scripts` | Repo utility scripts |
 
-## Key Core Differences & Capabilities
+## Prerequisites
 
-### 1. Zero-Action Transit Payments
-Unlike traditional turnstiles, validators, or QR codes that require passenger physical interface or device coordination, boarding is completely passive. A passenger walks past the entry camera, their face is matched against the database, and the fare ($1.50) is automatically settled.
+- **Node.js** 24+ and **pnpm** 10+
+- **Python** 3.12+
+- A **Supabase** project with PostgreSQL enabled
 
-### 2. Resilient Failover & Smart Audit (Backup Mode)
-To account for extreme operating conditions—such as winter gear, masks, or inadequate lighting—the system defaults to a fail-soft audit loop:
-- The system continuously logs the total number of boarding individuals (using OpenCV motion/face presence checks).
-- It compares this boarding tally against successful payment transactions.
-- On a ledger mismatch (e.g., 5 boardings but only 3 paid rides), the terminal logs a discrepancy and alerts a transit controller, bypassing hardware blocking without halting service.
+## Supabase setup
 
-### 3. Built-In Social Inclusivity
-- **Exempt Categories**: Pensioners, students, children under 16, and veterans are marked in the database (`exemption_type`). Upon face matching, the ledger resolves a zero-fare transaction, and the terminal displays a "Free Ride" approval screen.
-- **Unregistered Flow**: If the system detects a passenger not enrolled in the database, it flags them as "Unknown". The driver or transit controllers are alerted to settle the fare manually using traditional payment methods.
+### 1. Create a project
 
----
+1. Sign in at [supabase.com](https://supabase.com) and create a new project.
+2. Wait for the database to finish provisioning.
 
-## Technical Stack
+### 2. Get your connection string
 
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Frontend Framework** | React 19 + TypeScript 5.9 | Client architecture using modern React state patterns |
-| **Styling & Motion** | Tailwind CSS v4 + Framer Motion | Curated dark mode and glassmorphism layouts |
-| **API Client** | Orval | Auto-generated React Query hooks from OpenAPI spec |
-| **Routing** | Wouter | Lightweight client-side router |
-| **Backend Engine** | Python 3.12 + FastAPI | Async REST API orchestration |
-| **ORM & DB Connection** | Supabase | Structured queries and connection pooling |
-| **Biometric Processing**| OpenCV Haar Cascade | Frontal face crop and local feature extraction |
-| **Embedding Engine** | 4x4 Grid LBP Histograms | 1024-dimensional visual descriptor; cosine similarity matching |
+In the Supabase dashboard, open **Project Settings → Database** and copy a PostgreSQL connection URI.
 
----
+**Recommended for production (Render):** use the **Transaction pooler** URI (port `6543`). It works well with serverless and pooled deployments.
 
-## Biometric Matching Engine
+**Recommended for local development:** either the **Direct connection** (port `5432`) or the transaction pooler both work.
 
-FacePay avoids heavy deep learning framework overhead (e.g., TensorFlow) to optimize execution speed on resource-constrained hardware:
-1. **Enrollment**: Captures three distinct head poses. The face region is isolated via Haar cascade, scaled, and split into a $4 \times 4$ grid. Local Binary Patterns (LBP) are extracted from each cell and concatenated into a 1024-dimensional feature vector.
-2. **Biometric Token**: A single-use UUID token is generated containing the average vector of the 3 captures, preventing raw image storage on the server.
-3. **Identification**: Cosine similarity is calculated between the incoming frame and registered embeddings. If similarity matches or exceeds the threshold (default `0.30`), identification is successful.
+Replace `[YOUR-PASSWORD]` with your database password.
 
----
+### 3. Set `DATABASE_URL`
 
-## Running the Project
+The backend reads a single environment variable:
 
-### Prerequisites
-- Node.js (v24 or later)
-- pnpm (v10 or later)
-- Python 3.12+ and `uv` package manager
-- PostgreSQL instance running locally or remotely
+```powershell
+$env:DATABASE_URL = "postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres"
+```
 
-### Backend Setup
-1. Define the database environment variable:
-   ```powershell
-   $env:DATABASE_URL="postgresql://<username>:<password>@<host>:<port>/<database>"
-   ```
-2. Run the server using `uv`:
-   ```powershell
-   uv run --cwd artifacts/api-server uvicorn main:app --host 0.0.0.0 --port 8080 --reload
-   ```
+The server automatically appends `sslmode=require` when the URL contains `supabase`, so you do not need to add it manually.
 
-### Frontend Setup
-1. Install project dependencies:
-   ```powershell
-   pnpm install
-   ```
-2. Launch the Vite development server:
-   ```powershell
-   pnpm --filter @workspace/transit-app run dev
-   ```
+> **Note:** If you use Supabase's transaction pooler (port 6543), the backend is configured with connection pooling settings compatible with PgBouncer transaction mode.
 
-The application client will be served at `http://localhost:22373` and communicate with the API server at `http://localhost:8080/api`.
+### 4. Database schema
+
+Tables are created automatically when the API starts (`Base.metadata.create_all`). No manual migration step is required for a fresh Supabase project.
+
+| Table | Purpose |
+| --- | --- |
+| `users` | Profiles, face embeddings, exemption type |
+| `cards` | Linked payment cards and balances |
+| `transactions` | Ride, top-up, and refund records |
+| `bus_stats` | Aggregate boarding and payment counters |
+
+## Local development
+
+### 1. Install workspace dependencies
+
+From the repository root:
+
+```powershell
+pnpm install
+```
+
+> The root `preinstall` script enforces using `pnpm` (not npm or yarn).
+
+### 2. Start the API server
+
+```powershell
+cd artifacts/api-server
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+$env:DATABASE_URL = "postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres"
+$env:PORT = "8080"
+bash start.sh
+```
+
+The API listens on `http://localhost:8080`. Health check: `GET /health`.
+
+### 3. Start the transit frontend
+
+In a second terminal, from the repo root:
+
+```powershell
+$env:PORT = "5173"
+$env:BASE_PATH = "/"
+pnpm --filter @workspace/transit-app run dev
+```
+
+Open the URL printed by Vite (typically `http://localhost:5173`).
+
+### 4. Optional — UI sandbox
+
+```powershell
+$env:PORT = "5174"
+$env:BASE_PATH = "/"
+pnpm --filter @workspace/mockup-sandbox run dev
+```
+
+## Environment variables
+
+### API server (`artifacts/api-server`)
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | Supabase PostgreSQL connection URI |
+| `PORT` | No | HTTP port (default `8080`; Render uses `10000`) |
+| `SECRET_KEY` | No | Reserved for future auth features |
+
+### Frontend (`artifacts/transit-app`, `artifacts/mockup-sandbox`)
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `PORT` | Yes | Vite dev/preview server port |
+| `BASE_PATH` | Yes | App base path (use `/` for local dev) |
+
+## API overview
+
+Base path: `/api`
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/health`, `/api/healthz` | Health checks |
+| `POST` | `/api/auth/register` | Register a new user |
+| `POST` | `/api/auth/enroll-face` | Enroll face from base64 images |
+| `POST` | `/api/auth/identify` | Identify a user by face |
+| `GET` | `/api/users`, `/api/users/{id}` | List / get users |
+| `GET/POST` | `/api/users/{id}/card` | Get or link payment card |
+| `POST` | `/api/users/{id}/card/topup` | Top up card balance |
+| `GET` | `/api/users/{id}/transactions` | Transaction history |
+| `GET` | `/api/users/{id}/stats` | User ride statistics |
+| `POST` | `/api/bus/pay` | Bus terminal face payment |
+| `GET` | `/api/bus/stats` | Aggregate boarding stats |
+
+Full request/response schemas live in `lib/api-spec/openapi.yaml`.
+
+## Build
+
+Type-check and build all workspace packages:
+
+```powershell
+pnpm run build
+```
+
+Regenerate API clients after changing the OpenAPI spec:
+
+```powershell
+pnpm --filter @workspace/api-spec run codegen
+```
+
+## Deployment
+
+The backend is configured for [Render](https://render.com) via `render.yaml`:
+
+1. Connect this repository to Render.
+2. Set `DATABASE_URL` in the Render dashboard to your **Supabase connection URI** (transaction pooler recommended).
+3. Render auto-generates `SECRET_KEY` and sets `PORT` to `10000`.
+4. Deploy — the service runs `bash start.sh` from `artifacts/api-server`.
+
+Health check path: `/health`.
+
+## Transit app routes
+
+| Route | Page |
+| --- | --- |
+| `/` | Home |
+| `/register` | User registration + face enrollment |
+| `/login` | Face-based login |
+| `/dashboard/:id` | User dashboard |
+| `/card/:id` | Link / manage payment card |
+| `/bus` | Bus terminal (driver-facing) |
+| `/users` | Admin user list |
+
+## License
+
+MIT
